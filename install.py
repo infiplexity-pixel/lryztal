@@ -119,7 +119,7 @@ if build_mode:
 else:
     # Development installation
     print(f"{'Installing in development mode':=^100}")
-    _run_command(["pip", "install", "-e", ".[dev,datasets]"], "[PIP]")
+    _run_command(["pip", "install", "-e", ".[dev]"], "[PIP]")
 
 _run_command(["pytest", "tests"], "[TESTS]")
 print(f"{'Done!':=^100}")

@@ -5,4 +5,8 @@ Github: https://github.com/infiplexity-pixel/lryztal
 
 from .serializer import GeneralModuleSerializer
 
-__version__ = "0.1.4"
+__all__ = [
+    "GeneralModuleSerializer"
+]
+
+__version__ = "0.1.5"
