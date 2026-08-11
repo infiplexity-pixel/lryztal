@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=75", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
 
 [project]
 name = "lryztal"
@@ -36,7 +36,7 @@ lryztal = "lryztal.__main__:main"
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["src/lryztal*"]
+include = ["lryztal*"]
 
 [tool.ruff]
 line-length = 100
