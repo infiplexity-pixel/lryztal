@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lryztal"
-version = "0.1.5"
+version = "0.1.6"
 description = "Analytical model compression, streaming, reconstruction, and runtime infrastructure."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,7 +36,7 @@ lryztal = "lryztal.__main__:main"
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["lryztal*"]
+include = ["src/lryztal*"]
 
 [tool.ruff]
 line-length = 100
