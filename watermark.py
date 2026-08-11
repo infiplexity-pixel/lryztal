@@ -2,7 +2,7 @@
 """
 watermark.py - Adds author watermark to all Python files in a directory tree
 Author: Ansh Mathur
-Github: https://github.com/infiplexity-pixel/omninn
+Github: https://github.com/infiplexity-pixel/lryztal
 """
 
 import os

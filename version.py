@@ -1,12 +1,6 @@
-#!/usr/bin/env python3
 """
 Author: Ansh Mathur
-Github: https://github.com/infiplexity-pixel/taylor-compiler
-"""
-
-"""
-Author: Ansh Mathur
-Github: https://github.com/infiplexity-pixel/omninn
+Github: https://github.com/infiplexity-pixel/lryztal
 """
 
 """
