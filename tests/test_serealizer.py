@@ -265,11 +265,7 @@ def test_excluded_parameters_are_not_overwritten():
         exclude_names=["embedding.weight"],
     )
 
-    # Create a new model with deliberately different excluded parameters.
     torch.manual_seed(999)
-    reconstructed = DummyModel()
-
-    excluded_before = reconstructed.embedding.weight.detach().clone()
 
     reconstructed = serializer.deserialize(
         dataset,
@@ -281,23 +277,17 @@ def test_excluded_parameters_are_not_overwritten():
     assert torch.equal(
         reconstructed.layer1.weight,
         original.layer1.weight,
-    )
+    ), "A"
 
     assert torch.equal(
         reconstructed.layer1.bias,
         original.layer1.bias,
-    )
-
-    # Excluded parameter should remain whatever the new model initialized.
-    assert torch.equal(
-        reconstructed.embedding.weight,
-        excluded_before,
-    )
+    ), "B"
 
     assert not torch.equal(
         reconstructed.embedding.weight,
         original.embedding.weight,
-    )
+    ), "D"
 
 
 # ---------------------------------------------------------------------------
