@@ -139,7 +139,7 @@ def save_rzip(
 
     compressed = zlib.compress(
         rearranged.tobytes(),
-        level=ZLIB_LEVEL,
+        level=zlib_level,
     )
 
     # --------------------------------------------------------
