@@ -158,7 +158,7 @@ class GeneralModuleSerializer:
         
         # Then update with serialized parameters
         for name, shape in zip(metadata['param_names'], metadata['param_shapes']):
-            param_size = torch.prod(shape)
+            param_size = torch.prod(torch.tensor(shape))
             param_flat = flat_params[idx:idx + param_size]
             idx += param_size
             

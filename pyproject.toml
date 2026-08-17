@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lryztal"
-version = "0.2.1"
+version = "0.2.2"
 description = "Analytical model compression, streaming, reconstruction, and runtime infrastructure."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,6 +15,7 @@ authors = [
 dependencies = [
     "torch>=2.0",
     "numpy>=1.24",
+    "zlib"
 ]
 
 [project.urls]

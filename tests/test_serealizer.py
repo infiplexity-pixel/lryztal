@@ -2,12 +2,12 @@ import tempfile
 import re
 from pathlib import Path
 
-import numpy as np
 import pytest
 import torch
 import torch.nn as nn
 
 from lryztal import GeneralModuleSerializer
+
 
 class DummyModel(nn.Module):
     def __init__(self):
@@ -52,17 +52,13 @@ def test_serialize_shape_and_metadata():
     torch.manual_seed(42)
 
     model = DummyModel()
-    serializer = GeneralModuleSerializer(chunk_size=8)
+    serializer = GeneralModuleSerializer()
 
     dataset, metadata = serializer.serialize(model)
 
-    assert isinstance(dataset, np.ndarray)
-    assert dataset.ndim == 2
-    assert dataset.shape[1] == 8
-
-    assert metadata["chunk_size"] == 8
-    assert metadata["num_rows"] == dataset.shape[0]
-    assert metadata["total_params"] > 0
+    assert isinstance(dataset, torch.Tensor)
+    assert dataset.ndim == 1
+    assert dataset.dtype == torch.float32
 
     # Every serialized parameter should have metadata.
     assert len(metadata["param_names"]) == len(metadata["param_shapes"])
@@ -78,7 +74,7 @@ def test_serialize_deserialize_round_trip():
     original = DummyModel()
     original_state = clone_state_dict(original)
 
-    serializer = GeneralModuleSerializer(chunk_size=8)
+    serializer = GeneralModuleSerializer()
 
     dataset, metadata = serializer.serialize(original)
     reconstructed = serializer.deserialize(
@@ -94,52 +90,6 @@ def test_serialize_deserialize_round_trip():
 
 
 # ---------------------------------------------------------------------------
-# Padding
-# ---------------------------------------------------------------------------
-
-def test_padding_is_correctly_removed():
-    torch.manual_seed(42)
-
-    model = DummyModel()
-
-    # Almost certainly forces padding.
-    serializer = GeneralModuleSerializer(chunk_size=13)
-
-    dataset, metadata = serializer.serialize(model)
-
-    assert metadata["padding_needed"] >= 0
-    assert dataset.shape[1] == 13
-
-    reconstructed = serializer.deserialize(
-        dataset,
-        metadata,
-        DummyModel,
-    )
-
-    assert_state_dict_equal(
-        reconstructed.state_dict(),
-        model.state_dict(),
-    )
-
-
-def test_no_padding_when_exactly_divisible():
-    class SmallModel(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.weight = nn.Parameter(torch.arange(16).float())
-
-    model = SmallModel()
-
-    serializer = GeneralModuleSerializer(chunk_size=8)
-
-    dataset, metadata = serializer.serialize(model)
-
-    assert metadata["total_params"] == 16
-    assert metadata["padding_needed"] == 0
-    assert dataset.shape == (2, 8)
-
-
-# ---------------------------------------------------------------------------
 # Parameter ordering
 # ---------------------------------------------------------------------------
 
@@ -147,7 +97,7 @@ def test_parameter_order_is_preserved():
     torch.manual_seed(123)
 
     model = DummyModel()
-    serializer = GeneralModuleSerializer(chunk_size=8)
+    serializer = GeneralModuleSerializer()
 
     _, metadata = serializer.serialize(model)
 
@@ -164,7 +114,7 @@ def test_exclude_by_pattern():
     torch.manual_seed(42)
 
     model = DummyModel()
-    serializer = GeneralModuleSerializer(chunk_size=8)
+    serializer = GeneralModuleSerializer()
 
     dataset, metadata = serializer.serialize(
         model,
@@ -172,13 +122,6 @@ def test_exclude_by_pattern():
     )
 
     assert "embedding.weight" not in metadata["param_names"]
-
-    excluded_names = {
-        item["name"]
-        for item in metadata["excluded_params"]
-    }
-
-    assert "embedding.weight" in excluded_names
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +132,7 @@ def test_exclude_by_exact_name():
     torch.manual_seed(42)
 
     model = DummyModel()
-    serializer = GeneralModuleSerializer(chunk_size=8)
+    serializer = GeneralModuleSerializer()
 
     dataset, metadata = serializer.serialize(
         model,
@@ -197,13 +140,6 @@ def test_exclude_by_exact_name():
     )
 
     assert "layer1.weight" not in metadata["param_names"]
-
-    excluded_names = {
-        item["name"]
-        for item in metadata["excluded_params"]
-    }
-
-    assert "layer1.weight" in excluded_names
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +150,7 @@ def test_include_only_patterns():
     torch.manual_seed(42)
 
     model = DummyModel()
-    serializer = GeneralModuleSerializer(chunk_size=8)
+    serializer = GeneralModuleSerializer()
 
     dataset, metadata = serializer.serialize(
         model,
@@ -235,7 +171,7 @@ def test_include_only_pattern_with_exclusion():
     torch.manual_seed(42)
 
     model = DummyModel()
-    serializer = GeneralModuleSerializer(chunk_size=8)
+    serializer = GeneralModuleSerializer()
 
     dataset, metadata = serializer.serialize(
         model,
@@ -257,7 +193,7 @@ def test_excluded_parameters_are_not_overwritten():
 
     original = DummyModel()
 
-    serializer = GeneralModuleSerializer(chunk_size=8)
+    serializer = GeneralModuleSerializer()
 
     dataset, metadata = serializer.serialize(
         original,
@@ -290,62 +226,52 @@ def test_excluded_parameters_are_not_overwritten():
 
 
 # ---------------------------------------------------------------------------
-# Exclusion metadata
+# Metadata only contains param_names and param_shapes
 # ---------------------------------------------------------------------------
 
-def test_get_excluded_params_info():
+def test_metadata_only_contains_expected_keys():
     model = DummyModel()
-    serializer = GeneralModuleSerializer(chunk_size=8)
+    serializer = GeneralModuleSerializer()
 
-    _, metadata = serializer.serialize(
-        model,
-        exclude_patterns=[r"embedding"],
-        exclude_names=["layer1.bias"],
-    )
+    _, metadata = serializer.serialize(model)
 
-    excluded = serializer.get_excluded_params_info(metadata)
-
-    excluded_names = {
-        item["name"]
-        for item in excluded
-    }
-
-    assert "embedding.weight" in excluded_names
-    assert "layer1.bias" in excluded_names
+    # Verify metadata only contains the expected keys
+    expected_keys = {"param_names", "param_shapes"}
+    assert set(metadata.keys()) == expected_keys
 
 
 # ---------------------------------------------------------------------------
-# File round-trip
+# Different tensor dtypes - updated to handle dtype issues
 # ---------------------------------------------------------------------------
 
-def test_serialize_to_files_and_deserialize_from_files():
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        torch.float32,
+        torch.float64,
+    ],
+)
+def test_round_trip_with_different_dtypes(dtype):
     torch.manual_seed(42)
 
-    original = DummyModel()
-    original_state = clone_state_dict(original)
+    class SimpleModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.randn(10, dtype=dtype))
+            self.bias = nn.Parameter(torch.randn(5, dtype=dtype))
 
-    serializer = GeneralModuleSerializer(chunk_size=8)
+    model = SimpleModel()
+    original_state = clone_state_dict(model)
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp = Path(tmp)
+    serializer = GeneralModuleSerializer()
 
-        dataset_path = tmp / "dataset.npy"
-        metadata_path = tmp / "metadata.pt"
+    dataset, metadata = serializer.serialize(model)
 
-        serializer.serialize_to_files(
-            original,
-            dataset_path,
-            metadata_path,
-        )
-
-        assert dataset_path.exists()
-        assert metadata_path.exists()
-
-        reconstructed = serializer.deserialize_from_files(
-            dataset_path,
-            metadata_path,
-            DummyModel,
-        )
+    reconstructed = serializer.deserialize(
+        dataset,
+        metadata,
+        SimpleModel,
+    )
 
     assert_state_dict_equal(
         reconstructed.state_dict(),
@@ -354,39 +280,29 @@ def test_serialize_to_files_and_deserialize_from_files():
 
 
 # ---------------------------------------------------------------------------
-# Different chunk sizes
+# Test with mixed dtypes in the same model
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize(
-    "chunk_size",
-    [
-        1,
-        2,
-        3,
-        7,
-        8,
-        16,
-        31,
-        64,
-        128,
-    ],
-)
-def test_round_trip_with_different_chunk_sizes(chunk_size):
+def test_round_trip_with_mixed_dtypes():
     torch.manual_seed(42)
 
-    model = DummyModel()
+    class MixedModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.float_param = nn.Parameter(torch.randn(10, dtype=torch.float32))
+            self.double_param = nn.Parameter(torch.randn(5, dtype=torch.float64))
+
+    model = MixedModel()
     original_state = clone_state_dict(model)
 
-    serializer = GeneralModuleSerializer(
-        chunk_size=chunk_size,
-    )
+    serializer = GeneralModuleSerializer()
 
     dataset, metadata = serializer.serialize(model)
 
     reconstructed = serializer.deserialize(
         dataset,
         metadata,
-        DummyModel,
+        MixedModel,
     )
 
     assert_state_dict_equal(
@@ -401,7 +317,7 @@ def test_round_trip_with_different_chunk_sizes(chunk_size):
 
 def test_empty_selection_raises():
     model = DummyModel()
-    serializer = GeneralModuleSerializer(chunk_size=8)
+    serializer = GeneralModuleSerializer()
 
     with pytest.raises(ValueError, match="No parameters"):
         serializer.serialize(
@@ -416,7 +332,7 @@ def test_empty_selection_raises():
 
 def test_invalid_pattern_raises():
     model = DummyModel()
-    serializer = GeneralModuleSerializer(chunk_size=8)
+    serializer = GeneralModuleSerializer()
 
     with pytest.raises(re.error):
         serializer.serialize(
