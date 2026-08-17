@@ -1,5 +1,4 @@
 import torch
-import numpy as np
 from typing import Dict, Tuple, Type, Optional, List
 from collections import OrderedDict
 import re
@@ -20,13 +19,6 @@ class GeneralModuleSerializer:
         # Deserialize (only non-excluded params will be loaded)
         model = serializer.deserialize(dataset, metadata, MyModelClass)
     """
-    
-    def __init__(self, chunk_size: int = 128):
-        """
-        Args:
-            chunk_size: The 'i' dimension in (N, i) output format
-        """
-        self.chunk_size = chunk_size
         
     def _should_exclude(self, param_name: str, 
                        exclude_patterns: Optional[List[str]] = None,
@@ -59,7 +51,7 @@ class GeneralModuleSerializer:
                  model: torch.nn.Module,
                  exclude_patterns: Optional[List[str]] = None,
                  exclude_names: Optional[List[str]] = None,
-                 include_only_patterns: Optional[List[str]] = None) -> Tuple[np.ndarray, Dict]:
+                 include_only_patterns: Optional[List[str]] = None) -> Tuple[torch.Tensor, Dict]:
         """
         Convert any PyTorch model to flat dataset (N, chunk_size)
         
@@ -96,7 +88,7 @@ class GeneralModuleSerializer:
                 should_include = False
             
             if should_include:
-                param_flat = param.detach().cpu().numpy().flatten()
+                param_flat = param.detach().cpu().flatten()
                 all_params.append(param_flat)
                 param_names.append(name)
                 param_shapes.append(param.shape)
@@ -119,36 +111,19 @@ class GeneralModuleSerializer:
             raise ValueError("No parameters were selected for serialization. Check your inclusion/exclusion patterns.")
         
         # Concatenate all parameters
-        all_params_flat = np.concatenate(all_params)
-        total_params = len(all_params_flat)
-        
-        # Pad to make divisible by chunk_size
-        padding_needed = (self.chunk_size - (total_params % self.chunk_size)) % self.chunk_size
-        if padding_needed > 0:
-            all_params_flat = np.pad(all_params_flat, (0, padding_needed), mode='constant')
-        
-        # Reshape to (N, chunk_size)
-        num_rows = len(all_params_flat) // self.chunk_size
-        dataset = all_params_flat.reshape(num_rows, self.chunk_size)
+        all_params_flat = torch.concatenate(all_params)
+
         
         # Metadata for reconstruction
         metadata = {
             'param_names': param_names,
             'param_shapes': param_shapes,
-            'total_params': total_params,
-            'padding_needed': padding_needed,
-            'chunk_size': self.chunk_size,
-            'num_rows': num_rows,
-            'excluded_params': excluded_params,  # Store excluded params info
-            'excluded_patterns': exclude_patterns,
-            'excluded_names': exclude_names,
-            'include_only_patterns': include_only_patterns
         }
         
-        return dataset, metadata
+        return all_params_flat, metadata
     
     def deserialize(self, 
-                   dataset: np.ndarray, 
+                   dataset: torch.Tensor, 
                    metadata: Dict, 
                    model_class: Type[torch.nn.Module],
                    **model_kwargs) -> torch.nn.Module:
@@ -167,10 +142,6 @@ class GeneralModuleSerializer:
         # Flatten dataset
         flat_params = dataset.flatten()
         
-        # Remove padding
-        if metadata.get('padding_needed', 0) > 0:
-            flat_params = flat_params[:-metadata['padding_needed']]
-        
         # Create model instance
         model = model_class(**model_kwargs) if model_kwargs else model_class()
         
@@ -187,46 +158,15 @@ class GeneralModuleSerializer:
         
         # Then update with serialized parameters
         for name, shape in zip(metadata['param_names'], metadata['param_shapes']):
-            param_size = np.prod(shape)
+            param_size = torch.prod(shape)
             param_flat = flat_params[idx:idx + param_size]
             idx += param_size
             
             # Reshape and convert to tensor
             param_reshaped = param_flat.reshape(shape)
-            new_state_dict[name] = torch.from_numpy(param_reshaped).float()
+            new_state_dict[name] = param_reshaped
         
         # Load parameters (this will update only the parameters in the state dict)
         model.load_state_dict(new_state_dict, strict=False)  # strict=False allows missing params
         
         return model
-
-    def serialize_to_files(self, 
-                          model: torch.nn.Module, 
-                          dataset_path: str, 
-                          metadata_path: str,
-                          exclude_patterns: Optional[List[str]] = None,
-                          exclude_names: Optional[List[str]] = None,
-                          include_only_patterns: Optional[List[str]] = None) -> None:
-        """Convenience: serialize and save to files"""
-        dataset, metadata = self.serialize(
-            model, 
-            exclude_patterns=exclude_patterns,
-            exclude_names=exclude_names,
-            include_only_patterns=include_only_patterns
-        )
-        np.save(dataset_path, dataset)
-        torch.save(metadata, metadata_path)
-    
-    def deserialize_from_files(self,
-                              dataset_path: str,
-                              metadata_path: str,
-                              model_class: Type[torch.nn.Module],
-                              **model_kwargs) -> torch.nn.Module:
-        """Convenience: load from files and deserialize"""
-        dataset = np.load(dataset_path)
-        metadata = torch.load(metadata_path)
-        return self.deserialize(dataset, metadata, model_class, **model_kwargs)
-
-    def get_excluded_params_info(self, metadata: Dict) -> List[Dict]:
-        """Get information about excluded parameters"""
-        return metadata.get('excluded_params', [])

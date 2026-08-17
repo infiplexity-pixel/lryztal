@@ -4,9 +4,13 @@ Github: https://github.com/infiplexity-pixel/lryztal
 """
 
 from .serializer import GeneralModuleSerializer
+from .rzip import save_rzip, load_rzip
 
 __all__ = [
-    "GeneralModuleSerializer"
+    "GeneralModuleSerializer",
+
+    "save_rzip",
+    "load_rzip"
 ]
 
-__version__ = "0.1.7"
+__version__ = "0.2.0"
