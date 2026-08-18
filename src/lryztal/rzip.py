@@ -1,3 +1,5 @@
+# lryztal.py
+
 import struct
 import zlib
 from pathlib import Path
@@ -7,33 +9,44 @@ import torch
 
 
 MAGIC = b"RZIP"
-VERSION = 1
+VERSION = 2
 
-BLOCK_SIZE = 32
-ZLIB_LEVEL = 9
+
+_DTYPE_TO_CODE = {
+    torch.float16: 1,
+    torch.float32: 2,
+    torch.float64: 3,
+}
+
+_CODE_TO_DTYPE = {
+    1: torch.float16,
+    2: torch.float32,
+    3: torch.float64,
+}
 
 
 def save_rzip(
     tensor: torch.Tensor,
     path,
-    block_size: int = BLOCK_SIZE,
-    zlib_level: int = ZLIB_LEVEL
+    block_size: int = 32,
+    zlib_level: int = 9,
 ):
     """
-    Lossy float32/float64 -> 16-bit RZIP compression.
+    Losslessly save a 1D floating-point tensor.
 
-    The tensor is quantized to int16, blocks are reordered by
-    their standard deviation, then compressed with zlib-9.
+    Pipeline:
 
-    The permutation is stored, so the 16-bit representation is
-    reconstructed exactly. The floating-point reconstruction is
-    approximate because of 16-bit quantization.
+        float tensor
+            ↓
+        reinterpret bits as uint16/uint32/uint64
+            ↓
+        rearrange blocks by standard deviation
+            ↓
+        zlib
 
-    Input:
-        1D floating-point torch.Tensor
+    No numerical quantization occurs.
 
-    Returns:
-        None
+    The loaded tensor is bit-for-bit identical to the input.
     """
 
     if not isinstance(tensor, torch.Tensor):
@@ -41,55 +54,63 @@ def save_rzip(
 
     if tensor.ndim != 1:
         raise ValueError(
-            f"tensor must be 1D, got shape {tuple(tensor.shape)}"
+            f"tensor must be 1D, got {tuple(tensor.shape)}"
         )
 
-    if not tensor.is_floating_point():
+    if tensor.dtype not in _DTYPE_TO_CODE:
         raise TypeError(
-            f"tensor must be floating point, got {tensor.dtype}"
+            "Supported dtypes: float16, float32, float64"
+        )
+
+    if block_size < 1:
+        raise ValueError(
+            "block_size must be >= 1"
+        )
+
+    if not 0 <= zlib_level <= 9:
+        raise ValueError(
+            "zlib_level must be between 0 and 9"
         )
 
     path = Path(path)
 
     # --------------------------------------------------------
-    # Move to CPU float32
+    # Move to CPU and make contiguous.
     # --------------------------------------------------------
 
-    x = (
-        tensor.detach()
-        .cpu()
-        .float()
-        .numpy()
-    )
+    x = tensor.detach().cpu().contiguous()
 
-    n = len(x)
+    dtype = x.dtype
+    dtype_code = _DTYPE_TO_CODE[dtype]
 
     # --------------------------------------------------------
-    # 16-bit symmetric quantization
+    # Reinterpret the floating-point bits.
+    #
+    # float16 -> uint16
+    # float32 -> uint32
+    # float64 -> uint64
+    #
+    # No bits are changed.
     # --------------------------------------------------------
 
-    scale = float(np.max(np.abs(x)))
+    if dtype == torch.float16:
+        bits = x.view(torch.uint16)
 
-    if scale == 0.0:
-        scale = 1.0
+    elif dtype == torch.float32:
+        bits = x.view(torch.uint32)
 
-    q = np.rint(
-        x / scale * 32767.0
-    )
+    elif dtype == torch.float64:
+        bits = x.view(torch.uint64)
 
-    q = np.clip(
-        q,
-        -32767,
-        32767,
-    ).astype(np.int16)
+    else:
+        raise AssertionError
 
-    # Store as uint16 so the byte representation is simple.
-    data = (
-        q.astype(np.int32) + 32767
-    ).astype(np.uint16)
+    words = bits.numpy()
+
+    n = len(words)
 
     # --------------------------------------------------------
-    # Pad into blocks
+    # Pad into blocks.
     # --------------------------------------------------------
 
     n_blocks = (
@@ -99,27 +120,42 @@ def save_rzip(
     padded_n = n_blocks * block_size
 
     if padded_n != n:
-        data = np.pad(
-            data,
+        words = np.pad(
+            words,
             (0, padded_n - n),
             mode="constant",
         )
 
-    blocks = data.reshape(
+    blocks = words.reshape(
         n_blocks,
         block_size,
     )
 
     # --------------------------------------------------------
-    # Reorder blocks by standard deviation
+    # Calculate block standard deviation.
+    #
+    # We calculate this on the numerical floating-point values,
+    # not the integer bit patterns.
+    #
+    # This determines ordering only; the actual data remains
+    # completely unchanged.
     # --------------------------------------------------------
 
-    signed = (
-        blocks.astype(np.int32)
-        - 32767
+    values = x.numpy()
+
+    if padded_n != n:
+        values = np.pad(
+            values,
+            (0, padded_n - n),
+            mode="constant",
+        )
+
+    value_blocks = values.reshape(
+        n_blocks,
+        block_size,
     )
 
-    std = signed.std(
+    std = value_blocks.std(
         axis=1,
         dtype=np.float64,
     )
@@ -134,7 +170,7 @@ def save_rzip(
     ].reshape(-1)
 
     # --------------------------------------------------------
-    # Compress
+    # Compress.
     # --------------------------------------------------------
 
     compressed = zlib.compress(
@@ -143,19 +179,20 @@ def save_rzip(
     )
 
     # --------------------------------------------------------
-    # Save
+    # Write file.
     #
     # Header:
     #
-    # magic       4 bytes
-    # version     1
-    # dtype       1
-    # block size  4
-    # n blocks    4
-    # n values    8
-    # scale       8
-    # permutation N * 4
-    # payload     variable
+    # magic          4
+    # version        1
+    # dtype code     1
+    # block size     4
+    # number blocks  8
+    # number values  8
+    # payload size   8
+    #
+    # permutation
+    # payload
     # --------------------------------------------------------
 
     with open(path, "wb") as f:
@@ -169,11 +206,10 @@ def save_rzip(
             )
         )
 
-        # 16-bit quantized representation
         f.write(
             struct.pack(
                 "<B",
-                16,
+                dtype_code,
             )
         )
 
@@ -186,7 +222,7 @@ def save_rzip(
 
         f.write(
             struct.pack(
-                "<I",
+                "<Q",
                 n_blocks,
             )
         )
@@ -200,25 +236,17 @@ def save_rzip(
 
         f.write(
             struct.pack(
-                "<d",
-                scale,
-            )
-        )
-
-        # Permutation
-        f.write(
-            permutation.tobytes()
-        )
-
-        # Compressed payload size
-        f.write(
-            struct.pack(
                 "<Q",
                 len(compressed),
             )
         )
 
-        # Payload
+        # Block permutation
+        f.write(
+            permutation.tobytes()
+        )
+
+        # Compressed payload
         f.write(
             compressed
         )
@@ -227,16 +255,12 @@ def save_rzip(
 def load_rzip(
     path,
     device=None,
-    dtype=torch.float32,
 ):
     """
-    Load an RZIP file produced by save_rzip().
+    Load a lossless RZIP tensor.
 
-    Returns:
-        1D torch.Tensor
-
-    The returned tensor is approximately equal to the original
-    because the stored representation uses 16-bit quantization.
+    Returns a torch.Tensor with exactly the same dtype and
+    bit representation as the tensor passed to save_rzip().
     """
 
     path = Path(path)
@@ -264,15 +288,19 @@ def load_rzip(
                 f"Unsupported RZIP version: {version}"
             )
 
-        bits = struct.unpack(
+        dtype_code = struct.unpack(
             "<B",
             f.read(1),
         )[0]
 
-        if bits != 16:
+        if dtype_code not in _CODE_TO_DTYPE:
             raise ValueError(
-                f"Unsupported quantization: {bits} bits"
+                f"Unknown dtype code: {dtype_code}"
             )
+
+        dtype = _CODE_TO_DTYPE[
+            dtype_code
+        ]
 
         block_size = struct.unpack(
             "<I",
@@ -280,8 +308,8 @@ def load_rzip(
         )[0]
 
         n_blocks = struct.unpack(
-            "<I",
-            f.read(4),
+            "<Q",
+            f.read(8),
         )[0]
 
         n = struct.unpack(
@@ -289,8 +317,8 @@ def load_rzip(
             f.read(8),
         )[0]
 
-        scale = struct.unpack(
-            "<d",
+        payload_size = struct.unpack(
+            "<Q",
             f.read(8),
         )[0]
 
@@ -299,38 +327,51 @@ def load_rzip(
         # ----------------------------------------------------
 
         permutation = np.frombuffer(
-            f.read(n_blocks * 4),
+            f.read(
+                n_blocks * 4
+            ),
             dtype=np.uint32,
         ).copy()
 
         # ----------------------------------------------------
-        # Payload
+        # Compressed payload
         # ----------------------------------------------------
-
-        payload_size = struct.unpack(
-            "<Q",
-            f.read(8),
-        )[0]
 
         compressed = f.read(
             payload_size
         )
 
     # --------------------------------------------------------
-    # Decompress
+    # Decompress.
     # --------------------------------------------------------
 
     raw = zlib.decompress(
         compressed
     )
 
+    # --------------------------------------------------------
+    # Determine NumPy word dtype.
+    # --------------------------------------------------------
+
+    if dtype == torch.float16:
+        word_dtype = np.uint16
+
+    elif dtype == torch.float32:
+        word_dtype = np.uint32
+
+    elif dtype == torch.float64:
+        word_dtype = np.uint64
+
+    else:
+        raise AssertionError
+
     rearranged = np.frombuffer(
         raw,
-        dtype=np.uint16,
+        dtype=word_dtype,
     )
 
     # --------------------------------------------------------
-    # Undo block permutation
+    # Undo permutation.
     # --------------------------------------------------------
 
     blocks = rearranged.reshape(
@@ -346,36 +387,35 @@ def load_rzip(
         permutation
     ] = blocks
 
-    data = restored.reshape(-1)
-
-    # Remove padding
-    data = data[:n]
-
-    # --------------------------------------------------------
-    # Convert back to signed quantized values
-    # --------------------------------------------------------
-
-    q = (
-        data.astype(np.int32)
-        - 32767
-    ).astype(np.int16)
+    words = restored.reshape(-1)[
+        :n
+    ]
 
     # --------------------------------------------------------
-    # Dequantize
+    # Convert raw bits back into torch tensor.
     # --------------------------------------------------------
 
-    x = (
-        q.astype(np.float32)
-        / 32767.0
-        * np.float32(scale)
+    bits = torch.from_numpy(
+        words.copy()
     )
 
-    result = torch.from_numpy(
-        x
-    )
+    if dtype == torch.float16:
+        result = bits.view(
+            torch.float16
+        )
 
-    if dtype != torch.float32:
-        result = result.to(dtype)
+    elif dtype == torch.float32:
+        result = bits.view(
+            torch.float32
+        )
+
+    elif dtype == torch.float64:
+        result = bits.view(
+            torch.float64
+        )
+
+    else:
+        raise AssertionError
 
     if device is not None:
         result = result.to(device)
